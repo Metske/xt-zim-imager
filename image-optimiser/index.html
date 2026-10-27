@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Image Optimiser</title>
+<style>
+    body { font-family: sans-serif; padding: 20px; background: #f0f0f0; }
+    .container { display: flex; gap: 20px; }
+    .panel { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .viewer { flex-grow: 1; text-align: center; overflow: auto; }
+    .sidebar { width: 300px; flex-shrink: 0; }
+    .img-container { display: flex; gap: 20px; justify-content: center; align-items: flex-start; }
+    .img-box { border: 1px solid #ccc; background: #eee; padding: 10px; }
+    img { max-width: 100%; }
+    .slider-group { margin-bottom: 15px; }
+    .slider-group label { display: block; font-weight: bold; margin-bottom: 5px; }
+    input[type=range] { width: 100%; }
+    button { padding: 10px 15px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; }
+    button:hover { background: #0056b3; }
+</style>
+</head>
+<body>
+    <h1>ZIM Image Optimiser</h1>
+    
+    <div class="panel" style="margin-bottom: 20px;">
+        <input type="text" id="zimPath" placeholder="C:\path\to\file.zim" style="width: 400px; padding: 8px;">
+        <button onclick="loadZim()">Load ZIM</button>
+        <span id="loadStatus" style="margin-left: 10px; font-weight: bold;"></span>
+    </div>
+
+    <div class="container">
+        <div class="sidebar panel">
+            <button onclick="randomImage()" style="width: 100%; margin-bottom: 20px;">🎲 Random Image</button>
+            
+            <div class="slider-group">
+                <label>Bit Depth: <span id="valBits">2</span>-bit</label>
+                <input type="range" id="bits" min="1" max="2" value="2" oninput="updateVals(); process()">
+            </div>
+            <div class="slider-group">
+                <label>Brightness: <span id="valBright">0</span></label>
+                <input type="range" id="brightness" min="-100" max="100" value="0" oninput="updateVals(); process()">
+            </div>
+            <div class="slider-group">
+                <label>Contrast: <span id="valContrast">13</span></label>
+                <input type="range" id="contrast" min="-100" max="100" value="13" oninput="updateVals(); process()">
+            </div>
+            <div class="slider-group">
+                <label>Gamma: <span id="valGamma">1.0</span></label>
+                <input type="range" id="gamma" min="0.1" max="5.0" step="0.1" value="1.0" oninput="updateVals(); process()">
+            </div>
+            <div class="slider-group">
+                <label>Sharpen: <span id="valSharpen">1.0</span></label>
+                <input type="range" id="sharpen" min="0.0" max="5.0" step="0.1" value="1.0" oninput="updateVals(); process()">
+            </div>
+            <div class="slider-group">
+                <label>Black Clip (Shadows): <span id="valBlack">15</span></label>
+                <input type="range" id="blackclip" min="0" max="100" value="15" oninput="updateVals(); process()">
+            </div>
+            <div class="slider-group">
+                <label>White Clip (Highlights): <span id="valWhite">240</span></label>
+                <input type="range" id="whiteclip" min="150" max="255" value="240" oninput="updateVals(); process()">
+            </div>
+            
+            <div class="slider-group">
+                <label>Dithering Algorithm</label>
+                <select id="algo" style="width: 100%; padding: 5px;" onchange="process()">
+                    <option value="floydsteinberg">Floyd-Steinberg (Current Default)</option>
+                    <option value="atkinson">Atkinson</option>
+                    <option value="sierra">Sierra</option>
+                    <option value="bayer">Bayer Matrix (8x8)</option>
+                </select>
+            </div>
+
+            <div class="slider-group">
+                <label>Output Format</label>
+                <select id="format" style="width: 100%; padding: 5px;" onchange="handleFormatChange()">
+                    <option value="png">PNG (Dithered)</option>
+                    <option value="jpeg">JPEG (Grayscale)</option>
+                </select>
+            </div>
+            
+            <button onclick="resetSliders()" style="width: 100%; background: #6c757d;">Reset Sliders</button>
+        </div>
+
+        <div class="viewer panel">
+            <div class="img-container">
+                <div class="img-box">
+                    <h3>Original</h3>
+                    <img id="imgOriginal" src="" style="display:none;">
+                    <div id="origDetails" style="font-size: 0.8em; color: #555; margin-top: 5px; word-break: break-all;"></div>
+                </div>
+                <div class="img-box">
+                    <h3 id="processedTitle">Processed Output</h3>
+                    <img id="imgProcessed" src="" style="display:none;">
+                    <div id="procDetails" style="font-size: 0.8em; color: #555; margin-top: 5px;"></div>
+                </div>
+                <div class="img-box" id="simBox" style="display:none;">
+                    <h3>Firmware Tone Mapper</h3>
+                    <img id="imgSimulated" src="" style="display:none;">
+                    <div id="simDetails" style="font-size: 0.8em; color: #555; margin-top: 5px;">Simulated on-device dither</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentIdx = -1;
+        let debounceTimer;
+
+        function loadZim() {
+            const path = document.getElementById('zimPath').value;
+            if(!path) return alert("Enter ZIM path");
+            document.getElementById('loadStatus').innerText = "Loading...";
+            fetch('/api/load', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: 'path=' + encodeURIComponent(path)
+            })
+            .then(r => r.json())
+            .then(d => {
+                document.getElementById('loadStatus').innerText = `Loaded! (${d.articles} articles)`;
+            })
+            .catch(e => {
+                document.getElementById('loadStatus').innerText = "Error loading ZIM";
+            });
+        }
+
+        function randomImage() {
+            fetch('/api/random')
+            .then(r => r.json())
+            .then(d => {
+                currentIdx = d.index;
+                const orig = document.getElementById('imgOriginal');
+                orig.src = `/api/original?idx=${d.index}&t=${Date.now()}`;
+                orig.style.display = 'block';
+                document.getElementById('origDetails').innerText = d.url;
+                process();
+            })
+            .catch(e => alert("Please load a ZIM first"));
+        }
+
+        function updateVals() {
+            document.getElementById('valBits').innerText = document.getElementById('bits').value;
+            document.getElementById('valBright').innerText = document.getElementById('brightness').value;
+            document.getElementById('valContrast').innerText = document.getElementById('contrast').value;
+            document.getElementById('valGamma').innerText = document.getElementById('gamma').value;
+            document.getElementById('valSharpen').innerText = document.getElementById('sharpen').value;
+            document.getElementById('valBlack').innerText = document.getElementById('blackclip').value;
+            document.getElementById('valWhite').innerText = document.getElementById('whiteclip').value;
+        }
+
+        function handleFormatChange() {
+            const format = document.getElementById('format').value;
+            if (format === 'jpeg') {
+                document.getElementById('brightness').value = 0;
+                document.getElementById('contrast').value = 25;
+                document.getElementById('gamma').value = 1.0;
+                document.getElementById('sharpen').value = 1.0;
+                document.getElementById('blackclip').value = 13;
+                document.getElementById('whiteclip').value = 240;
+            } else {
+                document.getElementById('brightness').value = 0;
+                document.getElementById('contrast').value = 13;
+                document.getElementById('gamma').value = 1.0;
+                document.getElementById('sharpen').value = 1.0;
+                document.getElementById('blackclip').value = 15;
+                document.getElementById('whiteclip').value = 240;
+            }
+            updateVals();
+            process();
+        }
+
+        function resetSliders() {
+            document.getElementById('bits').value = 2;
+            document.getElementById('algo').value = "floydsteinberg";
+            document.getElementById('format').value = "png";
+            handleFormatChange(); // This will reset other sliders to PNG defaults and call updateVals + process
+        }
+
+        function process() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                if(currentIdx === -1) return;
+                const b = document.getElementById('brightness').value;
+                const c = document.getElementById('contrast').value;
+                const g = document.getElementById('gamma').value;
+                const bits = document.getElementById('bits').value;
+                const algo = document.getElementById('algo').value;
+                const sharpen = document.getElementById('sharpen').value;
+                const blackclip = document.getElementById('blackclip').value;
+                const whiteclip = document.getElementById('whiteclip').value;
+                const format = document.getElementById('format').value;
+                
+                const proc = document.getElementById('imgProcessed');
+                const simBox = document.getElementById('simBox');
+                const simImg = document.getElementById('imgSimulated');
+                
+                document.getElementById('processedTitle').innerText = format === 'jpeg' ? 'Imager Output (JPEG)' : 'Processed (Simulated E-Ink)';
+                
+                proc.src = `/api/process?idx=${currentIdx}&brightness=${b}&contrast=${c}&gamma=${g}&bits=${bits}&algo=${algo}&sharpen=${sharpen}&blackclip=${blackclip}&whiteclip=${whiteclip}&format=${format}&t=${Date.now()}`;
+                proc.style.display = 'block';
+                proc.onload = () => {
+                    document.getElementById('procDetails').innerText = `Width: ${proc.naturalWidth}px, Format: ${format}`;
+                };
+
+                if (format === 'jpeg') {
+                    simBox.style.display = 'block';
+                    simImg.src = `/api/process?idx=${currentIdx}&brightness=${b}&contrast=${c}&gamma=${g}&bits=${bits}&algo=${algo}&sharpen=${sharpen}&blackclip=${blackclip}&whiteclip=${whiteclip}&format=${format}&simulate=true&t=${Date.now()}`;
+                    simImg.style.display = 'block';
+                } else {
+                    simBox.style.display = 'none';
+                    simImg.style.display = 'none';
+                }
+            }, 150);
+        }
+    </script>
+</body>
+</html>

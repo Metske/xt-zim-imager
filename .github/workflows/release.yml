@@ -1,0 +1,130 @@
+name: Build macOS Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload macOS asset to'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build Frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Run unit tests
+        env:
+          CGO_LDFLAGS: "-framework UniformTypeIdentifiers"
+        run: go test -v . && rm -f test_mathjax_out.png
+
+      - name: Build macOS Universal App (.app)
+        env:
+          CGO_ENABLED: "1"
+          CGO_LDFLAGS: "-framework UniformTypeIdentifiers"
+        run: |
+          rm -rf build/bin/xt-zim-imager.app
+          mkdir -p build/bin/xt-zim-imager.app/Contents/MacOS
+          mkdir -p build/bin/xt-zim-imager.app/Contents/Resources
+
+          GOOS=darwin GOARCH=arm64 go build -tags desktop,production -ldflags "-w -s" -o build/bin/xt-zim-imager-arm64 .
+          GOOS=darwin GOARCH=amd64 go build -tags desktop,production -ldflags "-w -s" -o build/bin/xt-zim-imager-amd64 .
+
+          lipo -create -output build/bin/xt-zim-imager.app/Contents/MacOS/xt-zim-imager \
+            build/bin/xt-zim-imager-arm64 \
+            build/bin/xt-zim-imager-amd64
+          chmod +x build/bin/xt-zim-imager.app/Contents/MacOS/xt-zim-imager
+          rm -f build/bin/xt-zim-imager-arm64 build/bin/xt-zim-imager-amd64
+
+          mkdir -p build/icon.iconset
+          sips -s format png -z 16 16     build/appicon.png --out build/icon.iconset/icon_16x16.png
+          sips -s format png -z 32 32     build/appicon.png --out build/icon.iconset/icon_16x16@2x.png
+          sips -s format png -z 32 32     build/appicon.png --out build/icon.iconset/icon_32x32.png
+          sips -s format png -z 64 64     build/appicon.png --out build/icon.iconset/icon_32x32@2x.png
+          sips -s format png -z 128 128   build/appicon.png --out build/icon.iconset/icon_128x128.png
+          sips -s format png -z 256 256   build/appicon.png --out build/icon.iconset/icon_128x128@2x.png
+          sips -s format png -z 256 256   build/appicon.png --out build/icon.iconset/icon_256x256.png
+          sips -s format png -z 512 512   build/appicon.png --out build/icon.iconset/icon_256x256@2x.png
+          sips -s format png -z 512 512   build/appicon.png --out build/icon.iconset/icon_512x512.png
+          sips -s format png -z 1024 1024 build/appicon.png --out build/icon.iconset/icon_512x512@2x.png
+          iconutil -c icns build/icon.iconset -o build/bin/xt-zim-imager.app/Contents/Resources/iconfile.icns
+          rm -rf build/icon.iconset
+
+          cat > build/bin/xt-zim-imager.app/Contents/Info.plist << 'EOF'
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+              <dict>
+                  <key>CFBundlePackageType</key>
+                  <string>APPL</string>
+                  <key>CFBundleName</key>
+                  <string>xt-zim-imager</string>
+                  <key>CFBundleDisplayName</key>
+                  <string>xt-zim-imager</string>
+                  <key>CFBundleExecutable</key>
+                  <string>xt-zim-imager</string>
+                  <key>CFBundleIdentifier</key>
+                  <string>com.wails.xt-zim-imager</string>
+                  <key>CFBundleVersion</key>
+                  <string>1.0.0</string>
+                  <key>CFBundleGetInfoString</key>
+                  <string>xt-zim-imager</string>
+                  <key>CFBundleShortVersionString</key>
+                  <string>1.0.0</string>
+                  <key>CFBundleIconFile</key>
+                  <string>iconfile</string>
+                  <key>LSMinimumSystemVersion</key>
+                  <string>10.13.0</string>
+                  <key>NSHighResolutionCapable</key>
+                  <string>true</string>
+              </dict>
+          </plist>
+          EOF
+
+          codesign --force --deep --sign - build/bin/xt-zim-imager.app
+          codesign --verify --deep --strict build/bin/xt-zim-imager.app
+          file build/bin/xt-zim-imager.app/Contents/MacOS/xt-zim-imager
+
+      - name: Package macOS Universal App (.zip)
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent build/bin/xt-zim-imager.app xt-zim-imager-macos-universal.zip
+          ls -lh xt-zim-imager-macos-universal.zip
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              TAG="${GITHUB_REF#refs/tags/}"
+            else
+              TAG="v1.0.0"
+            fi
+          fi
+          echo "Uploading xt-zim-imager-macos-universal.zip to release ${TAG}..."
+          gh release upload "${TAG}" xt-zim-imager-macos-universal.zip --clobber
