@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Release tag to upload macOS asset to'
         required: false
-        default: 'v1.0.0'
+        default: 'v1.0.1'
 
 permissions:
   contents: write
@@ -75,7 +75,17 @@ jobs:
           iconutil -c icns build/icon.iconset -o build/bin/xt-zim-imager.app/Contents/Resources/iconfile.icns
           rm -rf build/icon.iconset
 
-          cat > build/bin/xt-zim-imager.app/Contents/Info.plist << 'EOF'
+          TAG_VER="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG_VER" ]; then
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              TAG_VER="${GITHUB_REF#refs/tags/}"
+            else
+              TAG_VER="v1.0.1"
+            fi
+          fi
+          BUNDLE_VER="${TAG_VER#v}"
+
+          cat > build/bin/xt-zim-imager.app/Contents/Info.plist << EOF
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
               <dict>
@@ -90,11 +100,11 @@ jobs:
                   <key>CFBundleIdentifier</key>
                   <string>com.wails.xt-zim-imager</string>
                   <key>CFBundleVersion</key>
-                  <string>1.0.0</string>
+                  <string>${BUNDLE_VER}</string>
                   <key>CFBundleGetInfoString</key>
                   <string>xt-zim-imager</string>
                   <key>CFBundleShortVersionString</key>
-                  <string>1.0.0</string>
+                  <string>${BUNDLE_VER}</string>
                   <key>CFBundleIconFile</key>
                   <string>iconfile</string>
                   <key>LSMinimumSystemVersion</key>
@@ -123,8 +133,15 @@ jobs:
             if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
               TAG="${GITHUB_REF#refs/tags/}"
             else
-              TAG="v1.0.0"
+              TAG="v1.0.1"
             fi
           fi
           echo "Uploading xt-zim-imager-macos-universal.zip to release ${TAG}..."
-          gh release upload "${TAG}" xt-zim-imager-macos-universal.zip --clobber
+          for attempt in 1 2 3 4 5 6; do
+            if gh release upload "${TAG}" xt-zim-imager-macos-universal.zip --clobber; then
+              exit 0
+            fi
+            echo "Attempt ${attempt} failed; waiting 10s for release ${TAG} to be ready..."
+            sleep 10
+          done
+          exit 1

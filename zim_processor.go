@@ -48,6 +48,10 @@ const (
 	MaxKeys       = 6
 	KeySize       = 64
 	btreeChunkCap = 65536 // 65,536 nodes per chunk (~30 MB per chunk)
+
+	CPR1FlagHasImages  uint32 = 1 << 0 // Bit 0: 1 = Image-enabled, 0 = No-pic
+	CPR1FlagDatesKnown uint32 = 1 << 1 // Bit 1: 1 = Bit 2 (hasDates) was evaluated by imager
+	CPR1FlagHasDates   uint32 = 1 << 2 // Bit 2: 1 = Calendar date articles ("On This Day") present
 )
 
 // FlatBTreeNode contains zero pointers so the Go GC marks its backing slice as noscan.
@@ -91,6 +95,65 @@ func (t *BTree) node(id uint32) *FlatBTreeNode {
 
 func (t *BTree) Insert(key []byte, offset uint64) {
 	t.InsertIfAbsent(key, offset)
+}
+
+func (t *BTree) Contains(key []byte) bool {
+	if len(key) == 0 || t.numNodes == 0 {
+		return false
+	}
+	var kPad [KeySize]byte
+	copy(kPad[:], key)
+
+	currID := t.root
+	for depth := 0; depth < 32; depth++ {
+		n := t.node(currID)
+		left := 0
+		right := int(n.NumKeys) - 1
+		for left <= right {
+			mid := left + (right-left)/2
+			cmp := bytes.Compare(kPad[:], n.Keys[mid][:])
+			if cmp == 0 {
+				return true
+			}
+			if cmp < 0 {
+				right = mid - 1
+			} else {
+				left = mid + 1
+			}
+		}
+		if n.IsLeaf {
+			return false
+		}
+		currID = n.Children[left]
+	}
+	return false
+}
+
+// HasCalendarDates checks ordinary non-holiday mid-month anchor dates across the year
+// to determine whether the indexed ZIM includes full "On This Day" calendar articles
+// (as opposed to topic subsets or top-50k dumps that only contain 0-2 famous dates).
+func (t *BTree) HasCalendarDates() bool {
+	anchors := [12][2]string{
+		{"january 15", "15 january"},
+		{"february 15", "15 february"},
+		{"march 19", "19 march"},
+		{"april 15", "15 april"},
+		{"may 12", "12 may"},
+		{"june 15", "15 june"},
+		{"july 22", "22 july"},
+		{"august 15", "15 august"},
+		{"september 18", "18 september"},
+		{"october 15", "15 october"},
+		{"november 14", "14 november"},
+		{"december 15", "15 december"},
+	}
+	found := 0
+	for _, pair := range anchors {
+		if t.Contains([]byte(pair[0])) || t.Contains([]byte(pair[1])) {
+			found++
+		}
+	}
+	return found >= 10
 }
 
 func (t *BTree) InsertIfAbsent(key []byte, offset uint64) bool {
@@ -3022,7 +3085,8 @@ func ProcessZIM(ctx context.Context, zimPath string, rawDrive io.WriteSeeker, un
 	redirects = nil
 	sectorSlice = nil
 
-	emitEvent(ctx, "log", fmt.Sprintf("Added %d redirects to index.", redirectsAdded))
+	hasDates := tree.HasCalendarDates()
+	emitEvent(ctx, "log", fmt.Sprintf("Added %d redirects to index (On This Day dates present: %v).", redirectsAdded, hasDates))
 	emitEvent(ctx, "log", fmt.Sprintf("Serializing B-Tree for %d articles + %d redirects...", count, redirectsAdded))
 
 	// 512-byte align before writing index
@@ -3092,9 +3156,12 @@ func ProcessZIM(ctx context.Context, zimPath string, rawDrive io.WriteSeeker, un
 	binary.LittleEndian.PutUint32(footer[4:8], indexStartSector)
 	binary.LittleEndian.PutUint32(footer[8:12], uint32(chunksStartOffset/512))
 	binary.LittleEndian.PutUint32(footer[12:16], fontSector)
-	flags := uint32(0)
+	flags := CPR1FlagDatesKnown
 	if processImages {
-		flags |= 1 // Bit 0: 1 = Image-enabled, 0 = No-pic
+		flags |= CPR1FlagHasImages
+	}
+	if hasDates {
+		flags |= CPR1FlagHasDates
 	}
 	binary.LittleEndian.PutUint32(footer[16:20], flags)
 

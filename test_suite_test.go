@@ -421,4 +421,40 @@ func TestParsoidLinkAndIconFiltering(t *testing.T) {
 	}
 }
 
+func TestBTreeHasCalendarDates(t *testing.T) {
+	sparse := NewBTree()
+	sparse.Insert([]byte("taj mahal"), 100)
+	sparse.Insert([]byte("february 25"), 200)
+	sparse.Insert([]byte("june 6"), 300)
+	if sparse.HasCalendarDates() {
+		t.Fatalf("expected sparse top_maxi-style BTree (only 2 date articles) to return HasCalendarDates() == false")
+	}
+
+	fullUS := NewBTree()
+	for i := 0; i < 300; i++ {
+		fullUS.Insert([]byte("article_"+strings.Repeat("x", i%17)+string(rune('a'+(i%26)))), uint64(i+1))
+	}
+	for _, d := range []string{
+		"january 15", "february 15", "march 19", "april 15", "may 12", "june 15",
+		"july 22", "august 15", "september 18", "october 15", "november 14", "december 15",
+	} {
+		fullUS.Insert([]byte(d), 999)
+	}
+	if !fullUS.HasCalendarDates() {
+		t.Fatalf("expected full US-format calendar BTree across node splits to return HasCalendarDates() == true")
+	}
+
+	fullUK := NewBTree()
+	for _, d := range []string{
+		"15 january", "15 february", "19 march", "15 april", "12 may", "15 june",
+		"22 july", "15 august", "18 september", "15 october", "14 november", "15 december",
+	} {
+		fullUK.Insert([]byte(d), 888)
+	}
+	if !fullUK.HasCalendarDates() {
+		t.Fatalf("expected full day-first calendar BTree to return HasCalendarDates() == true")
+	}
+}
+
+
 
